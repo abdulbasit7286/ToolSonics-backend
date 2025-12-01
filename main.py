@@ -7,116 +7,105 @@ import io
 
 app = FastAPI(
     title="ToolSonics Backend",
-    version="1.1.0",
-    description="PDF tools backend for ToolSonics"
+    version="2.0",
+    description="PDF Tools API for ToolSonics"
 )
 
-# CORS so GitHub frontend can call Render backend
+# =======================
+# CORS (GitHub Allowed)
+# =======================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # later tu apna domain specific bhi rakh sakta hai
+    allow_origins=["*"],     # later only domain add kar sakte ho
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 @app.get("/")
-def root():
-    return {"message": "ToolSonics backend is running with PDF tools!"}
+def home():
+    return {"status": "ToolSonics Backend Running Successfully!"}
 
-
-# ✅ MERGE PDF
+# =========================================================
+# 1️⃣ MERGE PDF
+# =========================================================
 @app.post("/pdf/merge")
 async def merge_pdfs(files: List[UploadFile] = File(...)):
     if len(files) < 2:
-        return JSONResponse(
-            {"error": "Please upload at least 2 PDF files."},
-            status_code=400
-        )
+        return JSONResponse({"error": "Upload at least 2 PDF files."}, status_code=400)
 
     merger = PdfMerger()
+
     try:
         for f in files:
-            if not f.filename.lower().endswith(".pdf"):
-                return JSONResponse(
-                    {"error": "All files must be PDF files."},
-                    status_code=400
-                )
+            if not f.filename.endswith(".pdf"):
+                return JSONResponse({"error": "Only PDF allowed."}, status_code=400)
+
             content = await f.read()
             merger.append(io.BytesIO(content))
 
-        output_stream = io.BytesIO()
-        merger.write(output_stream)
+        output = io.BytesIO()
+        merger.write(output)
         merger.close()
-        output_stream.seek(0)
+        output.seek(0)
 
         return StreamingResponse(
-            output_stream,
+            output,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=merged.pdf"}
         )
+
     except Exception as e:
-        return JSONResponse(
-            {"error": f"Failed to merge PDFs: {str(e)}"},
-            status_code=500
-        )
+        return JSONResponse({"error": "Merge failed: " + str(e)}, status_code=500)
 
 
-# ✅ SPLIT PDF (page range)
+# =========================================================
+# 2️⃣ SPLIT PDF (BY PAGE RANGE)
+# =========================================================
 @app.post("/pdf/split")
 async def split_pdf(
     file: UploadFile = File(...),
     start_page: int = Form(...),
     end_page: int = Form(...)
 ):
-    if not file.filename.lower().endswith(".pdf"):
-        return JSONResponse(
-            {"error": "Please upload a PDF file."},
-            status_code=400
-        )
-
     try:
+        if not file.filename.endswith(".pdf"):
+            return JSONResponse({"error": "Upload a PDF file."}, status_code=400)
+
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
         writer = PdfWriter()
 
-        total_pages = len(reader.pages)
+        total = len(reader.pages)
 
         if start_page < 1 or end_page < 1 or start_page > end_page:
-            return JSONResponse(
-                {"error": "Invalid page range."},
-                status_code=400
-            )
+            return JSONResponse({"error": "Invalid page range."}, status_code=400)
 
-        if end_page > total_pages:
-            return JSONResponse(
-                {"error": f"PDF has only {total_pages} pages."},
-                status_code=400
-            )
+        if end_page > total:
+            return JSONResponse({"error": f"PDF has only {total} pages."}, status_code=400)
 
         for i in range(start_page - 1, end_page):
             writer.add_page(reader.pages[i])
 
-        output_stream = io.BytesIO()
-        writer.write(output_stream)
-        output_stream.seek(0)
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
 
         return StreamingResponse(
-            output_stream,
+            output,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=split.pdf"}
         )
 
     except Exception as e:
-        return JSONResponse(
-            {"error": f"Failed to split PDF: {str(e)}"},
-            status_code=500
-        )
+        return JSONResponse({"error": "Split failed: " + str(e)}, status_code=500)
 
 
-# 🔧 Helper: parse pages string like "2,4,7-9"
-def parse_pages_to_delete(pages_str: str, total_pages: int):
-    pages_to_delete = set()
+# =========================================================
+# Helper: For DELETE + ROTATE pages
+# =========================================================
+def parse_pages(pages_str: str, total_pages: int):
+    pages = set()
 
     for part in pages_str.split(","):
         part = part.strip()
@@ -124,82 +113,115 @@ def parse_pages_to_delete(pages_str: str, total_pages: int):
             continue
 
         if "-" in part:
-            try:
-                start_s, end_s = part.split("-")
-                start = int(start_s)
-                end = int(end_s)
-                if start > end:
-                    start, end = end, start
-                for p in range(start, end + 1):
-                    if 1 <= p <= total_pages:
-                        pages_to_delete.add(p)
-            except ValueError:
-                continue
+            a, b = part.split("-")
+            a, b = int(a), int(b)
+            if a > b:
+                a, b = b, a
+            for i in range(a, b + 1):
+                if 1 <= i <= total_pages:
+                    pages.add(i)
         else:
             try:
                 p = int(part)
                 if 1 <= p <= total_pages:
-                    pages_to_delete.add(p)
-            except ValueError:
-                continue
+                    pages.add(p)
+            except:
+                pass
 
-    return pages_to_delete
+    return pages
 
 
-# ✅ DELETE PAGES FROM PDF
+# =========================================================
+# 3️⃣ DELETE PAGES FROM PDF
+# =========================================================
 @app.post("/pdf/delete-pages")
-async def delete_pages_pdf(
+async def delete_pages(
     file: UploadFile = File(...),
     pages: str = Form(...)
 ):
-    """
-    'pages' like: "2,4,7-9"
-    1-based page numbers.
-    """
-    if not file.filename.lower().endswith(".pdf"):
-        return JSONResponse(
-            {"error": "Please upload a PDF file."},
-            status_code=400
-        )
-
     try:
+        if not file.filename.endswith(".pdf"):
+            return JSONResponse({"error": "Upload a valid PDF."}, status_code=400)
+
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
-        total_pages = len(reader.pages)
+        writer = PdfWriter()
+        total = len(reader.pages)
 
-        pages_to_delete = parse_pages_to_delete(pages, total_pages)
+        pages_to_delete = parse_pages(pages, total)
 
         if not pages_to_delete:
-            return JSONResponse(
-                {"error": "No valid pages to delete."},
-                status_code=400
-            )
+            return JSONResponse({"error": "No valid pages to delete."}, status_code=400)
 
-        if len(pages_to_delete) >= total_pages:
-            return JSONResponse(
-                {"error": "Cannot delete all pages."},
-                status_code=400
-            )
+        if len(pages_to_delete) >= total:
+            return JSONResponse({"error": "Cannot delete all pages."}, status_code=400)
 
-        writer = PdfWriter()
+        for i in range(total):
+            if (i + 1) not in pages_to_delete:
+                writer.add_page(reader.pages[i])
 
-        for idx in range(total_pages):
-            page_number = idx + 1  # 1-based
-            if page_number not in pages_to_delete:
-                writer.add_page(reader.pages[idx])
-
-        output_stream = io.BytesIO()
-        writer.write(output_stream)
-        output_stream.seek(0)
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
 
         return StreamingResponse(
-            output_stream,
+            output,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=deleted-pages.pdf"}
         )
 
     except Exception as e:
-        return JSONResponse(
-            {"error": f"Failed to delete pages: {str(e)}"},
-            status_code=500
+        return JSONResponse({"error": "Delete failed: " + str(e)}, status_code=500)
+
+
+# =========================================================
+# 4️⃣ ROTATE PAGES IN PDF
+# =========================================================
+@app.post("/pdf/rotate-pages")
+async def rotate_pages(
+    file: UploadFile = File(...),
+    rotation: int = Form(...),      # 90, 180, 270
+    pages: str = Form("")           # blank -> all pages
+):
+    try:
+        if not file.filename.endswith(".pdf"):
+            return JSONResponse({"error": "Upload a PDF."}, status_code=400)
+
+        if rotation not in (90, 180, 270):
+            return JSONResponse({"error": "Rotation must be 90,180,270."}, status_code=400)
+
+        content = await file.read()
+        reader = PdfReader(io.BytesIO(content))
+        writer = PdfWriter()
+        total = len(reader.pages)
+
+        # if no pages → rotate ALL pages
+        if pages.strip() == "":
+            rotate_pages = set(range(1, total + 1))
+        else:
+            rotate_pages = parse_pages(pages, total)
+
+        if not rotate_pages:
+            return JSONResponse({"error": "No valid pages to rotate."}, status_code=400)
+
+        for i in range(total):
+            page_number = i + 1
+            page = reader.pages[i]
+
+            if page_number in rotate_pages:
+                page.rotate(rotation)
+
+            writer.add_page(page)
+
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
+
+        return StreamingResponse(
+            output,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=rotated.pdf"}
         )
+
+    except Exception as e:
+        return JSONResponse({"error": "Rotate failed: " + str(e)}, status_code=500)
