@@ -6,44 +6,40 @@ from PyPDF2 import PdfMerger, PdfReader, PdfWriter
 import io
 
 app = FastAPI(
-    title="ToolSonics Backend",
-    version="2.0",
-    description="PDF Tools API for ToolSonics"
+    title="ToolSonics PDF Backend",
+    version="3.0",
+    description="All PDF tools backend: Merge, Split, Delete, Rotate, Reorder"
 )
 
-# =======================
-# CORS (GitHub Allowed)
-# =======================
+# CORS ALLOW ALL (GitHub Frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],     # later only domain add kar sakte ho
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 @app.get("/")
 def home():
-    return {"status": "ToolSonics Backend Running Successfully!"}
+    return {"message": "ToolSonics Backend Running Successfully!"}
 
 # =========================================================
 # 1️⃣ MERGE PDF
 # =========================================================
 @app.post("/pdf/merge")
-async def merge_pdfs(files: List[UploadFile] = File(...)):
+async def merge_pdf(files: List[UploadFile] = File(...)):
     if len(files) < 2:
         return JSONResponse({"error": "Upload at least 2 PDF files."}, status_code=400)
-
+    
     merger = PdfMerger()
-
     try:
         for f in files:
             if not f.filename.endswith(".pdf"):
-                return JSONResponse({"error": "Only PDF allowed."}, status_code=400)
-
+                return JSONResponse({"error": "Only PDF files allowed."}, status_code=400)
+            
             content = await f.read()
             merger.append(io.BytesIO(content))
-
+        
         output = io.BytesIO()
         merger.write(output)
         merger.close()
@@ -58,19 +54,14 @@ async def merge_pdfs(files: List[UploadFile] = File(...)):
     except Exception as e:
         return JSONResponse({"error": "Merge failed: " + str(e)}, status_code=500)
 
-
 # =========================================================
-# 2️⃣ SPLIT PDF (BY PAGE RANGE)
+# 2️⃣ SPLIT PDF (PAGE RANGE)
 # =========================================================
 @app.post("/pdf/split")
-async def split_pdf(
-    file: UploadFile = File(...),
-    start_page: int = Form(...),
-    end_page: int = Form(...)
-):
+async def split_pdf(file: UploadFile = File(...), start_page: int = Form(...), end_page: int = Form(...)):
     try:
         if not file.filename.endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF file."}, status_code=400)
+            return JSONResponse({"error": "Upload PDF only."}, status_code=400)
 
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
@@ -100,13 +91,11 @@ async def split_pdf(
     except Exception as e:
         return JSONResponse({"error": "Split failed: " + str(e)}, status_code=500)
 
-
 # =========================================================
-# Helper: For DELETE + ROTATE pages
+# Helper - Parse pages like "2,4,7-9"
 # =========================================================
 def parse_pages(pages_str: str, total_pages: int):
     pages = set()
-
     for part in pages_str.split(","):
         part = part.strip()
         if not part:
@@ -117,47 +106,42 @@ def parse_pages(pages_str: str, total_pages: int):
             a, b = int(a), int(b)
             if a > b:
                 a, b = b, a
-            for i in range(a, b + 1):
-                if 1 <= i <= total_pages:
-                    pages.add(i)
+            for x in range(a, b + 1):
+                if 1 <= x <= total_pages:
+                    pages.add(x)
         else:
             try:
-                p = int(part)
-                if 1 <= p <= total_pages:
-                    pages.add(p)
+                x = int(part)
+                if 1 <= x <= total_pages:
+                    pages.add(x)
             except:
                 pass
-
     return pages
 
-
 # =========================================================
-# 3️⃣ DELETE PAGES FROM PDF
+# 3️⃣ DELETE PAGES
 # =========================================================
 @app.post("/pdf/delete-pages")
-async def delete_pages(
-    file: UploadFile = File(...),
-    pages: str = Form(...)
-):
+async def delete_pdf_pages(file: UploadFile = File(...), pages: str = Form(...)):
     try:
         if not file.filename.endswith(".pdf"):
             return JSONResponse({"error": "Upload a valid PDF."}, status_code=400)
 
-        content = await file.read()
-        reader = PdfReader(io.BytesIO(content))
+        pdf_bytes = await file.read()
+        reader = PdfReader(io.BytesIO(pdf_bytes))
         writer = PdfWriter()
+
         total = len(reader.pages)
+        delete_set = parse_pages(pages, total)
 
-        pages_to_delete = parse_pages(pages, total)
+        if not delete_set:
+            return JSONResponse({"error": "No valid pages."}, status_code=400)
 
-        if not pages_to_delete:
-            return JSONResponse({"error": "No valid pages to delete."}, status_code=400)
-
-        if len(pages_to_delete) >= total:
+        if len(delete_set) >= total:
             return JSONResponse({"error": "Cannot delete all pages."}, status_code=400)
 
         for i in range(total):
-            if (i + 1) not in pages_to_delete:
+            if (i + 1) not in delete_set:
                 writer.add_page(reader.pages[i])
 
         output = io.BytesIO()
@@ -173,44 +157,35 @@ async def delete_pages(
     except Exception as e:
         return JSONResponse({"error": "Delete failed: " + str(e)}, status_code=500)
 
-
 # =========================================================
-# 4️⃣ ROTATE PAGES IN PDF
+# 4️⃣ ROTATE PAGES
 # =========================================================
 @app.post("/pdf/rotate-pages")
-async def rotate_pages(
-    file: UploadFile = File(...),
-    rotation: int = Form(...),      # 90, 180, 270
-    pages: str = Form("")           # blank -> all pages
-):
+async def rotate_pdf_pages(file: UploadFile = File(...), rotation: int = Form(...), pages: str = Form("")):
     try:
         if not file.filename.endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF."}, status_code=400)
+            return JSONResponse({"error": "Upload PDF only."}, status_code=400)
 
         if rotation not in (90, 180, 270):
-            return JSONResponse({"error": "Rotation must be 90,180,270."}, status_code=400)
+            return JSONResponse({"error": "Rotation must be 90, 180, 270."}, status_code=400)
 
-        content = await file.read()
-        reader = PdfReader(io.BytesIO(content))
+        pdf_bytes = await file.read()
+        reader = PdfReader(io.BytesIO(pdf_bytes))
         writer = PdfWriter()
         total = len(reader.pages)
 
-        # if no pages → rotate ALL pages
         if pages.strip() == "":
-            rotate_pages = set(range(1, total + 1))
+            rotate_set = set(range(1, total + 1))
         else:
-            rotate_pages = parse_pages(pages, total)
+            rotate_set = parse_pages(pages, total)
 
-        if not rotate_pages:
-            return JSONResponse({"error": "No valid pages to rotate."}, status_code=400)
+        if not rotate_set:
+            return JSONResponse({"error": "Invalid pages."}, status_code=400)
 
         for i in range(total):
-            page_number = i + 1
             page = reader.pages[i]
-
-            if page_number in rotate_pages:
+            if (i + 1) in rotate_set:
                 page.rotate(rotation)
-
             writer.add_page(page)
 
         output = io.BytesIO()
@@ -224,4 +199,53 @@ async def rotate_pages(
         )
 
     except Exception as e:
-        return JSONResponse({"error": "Rotate failed: " + str(e)}, status_code=500)
+        return JSONResponse({"error": "Rotation failed: " + str(e)}, status_code=500)
+
+# =========================================================
+# 5️⃣ REORDER PAGES (NEW)
+# =========================================================
+@app.post("/pdf/reorder-pages")
+async def reorder_pdf_pages(file: UploadFile = File(...), order: str = Form(...)):
+    """
+    Example input:
+    order = "3,1,4,2"
+    Means: page 3 -> first, page 1 -> second, page 4 -> third, page 2 -> fourth
+    """
+    try:
+        if not file.filename.endswith(".pdf"):
+            return JSONResponse({"error": "Upload PDF only."}, status_code=400)
+
+        pdf_bytes = await file.read()
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        writer = PdfWriter()
+        total = len(reader.pages)
+
+        # Convert order string → list
+        try:
+            new_order = [int(x.strip()) for x in order.split(",") if x.strip().isdigit()]
+        except:
+            return JSONResponse({"error": "Invalid format. Use comma-separated numbers."}, status_code=400)
+
+        # Validate
+        if len(new_order) != total:
+            return JSONResponse({"error": f"Order must contain exactly {total} pages."}, status_code=400)
+
+        if any(x < 1 or x > total for x in new_order):
+            return JSONResponse({"error": "Page numbers out of range."}, status_code=400)
+
+        # Reorder pages
+        for page_num in new_order:
+            writer.add_page(reader.pages[page_num - 1])
+
+        output = io.BytesIO()
+        writer.write(output)
+        output.seek(0)
+
+        return StreamingResponse(
+            output,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=reordered.pdf"}
+        )
+
+    except Exception as e:
+        return JSONResponse({"error": "Reorder failed: " + str(e)}, status_code=500)
