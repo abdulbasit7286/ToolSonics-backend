@@ -7,12 +7,18 @@ import io
 from PyPDF2 import PdfMerger, PdfReader, PdfWriter
 from PIL import Image
 import pandas as pd
+
+# For page numbers (overlay using ReportLab)
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib.pagesizes import letter
 
-app = FastAPI(title="ToolSonics Backend", version="1.0")
 
-# =============== CORS ============
+app = FastAPI(title="ToolSonics Backend", version="2.0")
+
+
+# -----------------------------------------------------------
+# CORS ENABLE
+# -----------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,12 +26,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")
 def home():
     return {"status": "ok", "message": "ToolSonics backend running"}
 
 
-# =========== HELPER: parse pages like 1,3,5-7 ===========
+# -----------------------------------------------------------
+# PARSE PAGE RANGES (ex: 1,3,5-7)
+# -----------------------------------------------------------
 def parse_pages(pages_str: str, total_pages: int):
     pages = set()
     for part in pages_str.split(","):
@@ -48,55 +57,43 @@ def parse_pages(pages_str: str, total_pages: int):
     return pages
 
 
-# =========================================================
+# -----------------------------------------------------------
 # 1) MERGE PDF
-# =========================================================
+# -----------------------------------------------------------
 @app.post("/pdf/merge")
 async def merge_pdf(files: List[UploadFile] = File(...)):
-    if len(files) < 2:
-        return JSONResponse({"error": "Upload at least 2 PDF files."}, status_code=400)
-
-    merger = PdfMerger()
     try:
+        merger = PdfMerger()
         for f in files:
-            if not f.filename.lower().endswith(".pdf"):
-                return JSONResponse({"error": "Only PDF files allowed."}, status_code=400)
             content = await f.read()
             merger.append(io.BytesIO(content))
 
         output = io.BytesIO()
         merger.write(output)
-        merger.close()
         output.seek(0)
+        merger.close()
 
         return StreamingResponse(
             output,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=merged.pdf"}
         )
+
     except Exception as e:
         return JSONResponse({"error": f"Merge failed: {e}"}, status_code=500)
 
 
-# =========================================================
+# -----------------------------------------------------------
 # 2) SPLIT PDF
-# =========================================================
+# -----------------------------------------------------------
 @app.post("/pdf/split")
-async def split_pdf(
-    file: UploadFile = File(...),
-    start_page: int = Form(...),
-    end_page: int = Form(...)
-):
+async def split_pdf(file: UploadFile = File(...),
+                    start_page: int = Form(...),
+                    end_page: int = Form(...)):
     try:
-        if not file.filename.lower().endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF file."}, status_code=400)
-
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
         total = len(reader.pages)
-
-        if start_page < 1 or end_page < 1 or start_page > end_page or end_page > total:
-            return JSONResponse({"error": "Invalid page range."}, status_code=400)
 
         writer = PdfWriter()
         for i in range(start_page - 1, end_page):
@@ -115,31 +112,22 @@ async def split_pdf(
         return JSONResponse({"error": f"Split failed: {e}"}, status_code=500)
 
 
-# =========================================================
+# -----------------------------------------------------------
 # 3) DELETE PAGES
-# =========================================================
+# -----------------------------------------------------------
 @app.post("/pdf/delete-pages")
-async def delete_pages(
-    file: UploadFile = File(...),
-    pages: str = Form(...)
-):
+async def delete_pages(file: UploadFile = File(...),
+                       pages: str = Form(...)):
     try:
-        if not file.filename.lower().endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF."}, status_code=400)
-
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
         total = len(reader.pages)
-        to_delete = parse_pages(pages, total)
 
-        if not to_delete:
-            return JSONResponse({"error": "No valid pages to delete."}, status_code=400)
-        if len(to_delete) >= total:
-            return JSONResponse({"error": "Cannot delete all pages."}, status_code=400)
+        delete_set = parse_pages(pages, total)
 
         writer = PdfWriter()
         for i in range(total):
-            if (i + 1) not in to_delete:
+            if (i + 1) not in delete_set:
                 writer.add_page(reader.pages[i])
 
         output = io.BytesIO()
@@ -149,28 +137,22 @@ async def delete_pages(
         return StreamingResponse(
             output,
             media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=deleted-pages.pdf"}
+            headers={"Content-Disposition": "attachment; filename=deleted.pdf"}
         )
     except Exception as e:
         return JSONResponse({"error": f"Delete failed: {e}"}, status_code=500)
 
 
-# =========================================================
-# 4) ROTATE PAGES
-# =========================================================
+# -----------------------------------------------------------
+# 4) ROTATE
+# -----------------------------------------------------------
 @app.post("/pdf/rotate-pages")
 async def rotate_pages(
     file: UploadFile = File(...),
-    rotation: int = Form(...),   # 90, 180, 270
-    pages: str = Form("")        # "" => all pages
+    rotation: int = Form(...),
+    pages: str = Form("")
 ):
     try:
-        if not file.filename.lower().endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF."}, status_code=400)
-
-        if rotation not in (90, 180, 270):
-            return JSONResponse({"error": "Rotation must be 90, 180, or 270."}, status_code=400)
-
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
         total = len(reader.pages)
@@ -179,9 +161,6 @@ async def rotate_pages(
             rotate_set = parse_pages(pages, total)
         else:
             rotate_set = set(range(1, total + 1))
-
-        if not rotate_set:
-            return JSONResponse({"error": "No valid pages to rotate."}, status_code=400)
 
         writer = PdfWriter()
         for i in range(total):
@@ -203,31 +182,21 @@ async def rotate_pages(
         return JSONResponse({"error": f"Rotate failed: {e}"}, status_code=500)
 
 
-# =========================================================
-# 5) REORDER PAGES
-# =========================================================
+# -----------------------------------------------------------
+# 5) REORDER
+# -----------------------------------------------------------
 @app.post("/pdf/reorder-pages")
-async def reorder_pages(
-    file: UploadFile = File(...),
-    order: str = Form(...)
-):
+async def reorder_pages(file: UploadFile = File(...),
+                        order: str = Form(...)):
     try:
-        if not file.filename.lower().endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF."}, status_code=400)
-
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
         total = len(reader.pages)
 
-        try:
-            order_list = [int(x.strip()) for x in order.split(",") if x.strip()]
-        except:
-            return JSONResponse({"error": "Invalid order format."}, status_code=400)
+        order_list = [int(x.strip()) for x in order.split(",") if x.strip()]
 
         if len(order_list) != total:
-            return JSONResponse({"error": f"Order must have exactly {total} numbers."}, status_code=400)
-        if any(p < 1 or p > total for p in order_list):
-            return JSONResponse({"error": "Page numbers out of range."}, status_code=400)
+            return JSONResponse({"error": f"Order must contain {total} numbers."}, status_code=400)
 
         writer = PdfWriter()
         for p in order_list:
@@ -246,24 +215,17 @@ async def reorder_pages(
         return JSONResponse({"error": f"Reorder failed: {e}"}, status_code=500)
 
 
-# =========================================================
-# 6) PROTECT PDF (ADD PASSWORD)
-# =========================================================
+# -----------------------------------------------------------
+# 6) PROTECT
+# -----------------------------------------------------------
 @app.post("/pdf/protect")
-async def protect_pdf(
-    file: UploadFile = File(...),
-    password: str = Form(...)
-):
+async def protect_pdf(file: UploadFile = File(...),
+                      password: str = Form(...)):
     try:
-        if not file.filename.lower().endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF."}, status_code=400)
-        if not password:
-            return JSONResponse({"error": "Password required."}, status_code=400)
-
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
-        writer = PdfWriter()
 
+        writer = PdfWriter()
         for page in reader.pages:
             writer.add_page(page)
 
@@ -282,34 +244,29 @@ async def protect_pdf(
         return JSONResponse({"error": f"Protect failed: {e}"}, status_code=500)
 
 
-# =========================================================
-# 7) UNLOCK PDF (REMOVE PASSWORD)
-# =========================================================
+# -----------------------------------------------------------
+# 7) UNLOCK
+# -----------------------------------------------------------
 @app.post("/pdf/unlock")
-async def unlock_pdf(
-    file: UploadFile = File(...),
-    password: str = Form(...)
-):
+async def unlock_pdf(file: UploadFile = File(...),
+                     password: str = Form(...)):
     try:
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
 
         if reader.is_encrypted:
-            try:
-                reader.decrypt(password)
-            except Exception:
-                return JSONResponse({"error": "Wrong password or cannot decrypt."}, status_code=400)
+            reader.decrypt(password)
 
         writer = PdfWriter()
-        for page in reader.pages:
-            writer.add_page(page)
+        for p in reader.pages:
+            writer.add_page(p)
 
-        output = io.BytesIO()
-        writer.write(output)
-        output.seek(0)
+        out = io.BytesIO()
+        writer.write(out)
+        out.seek(0)
 
         return StreamingResponse(
-            output,
+            out,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=unlocked.pdf"}
         )
@@ -317,35 +274,45 @@ async def unlock_pdf(
         return JSONResponse({"error": f"Unlock failed: {e}"}, status_code=500)
 
 
-# =========================================================
-# 8) ADD PAGE NUMBERS (simple text annotation bottom-center)
-# =========================================================
+# -----------------------------------------------------------
+# 8) ADD PAGE NUMBERS (FIXED)
+# -----------------------------------------------------------
 @app.post("/pdf/add-page-numbers")
 async def add_page_numbers(
     file: UploadFile = File(...),
-    position: str = Form("bottom-center")   # frontend se aa raha hai, abhi ignore karenge
+    position: str = Form("bottom-center")
 ):
     try:
-        if not file.filename.lower().endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF."}, status_code=400)
-
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
-        writer = PdfWriter()
         total = len(reader.pages)
 
-        # NOTE: PyPDF2 se proper text draw karna easy nahi,
-        # isliye abhi hum sirf metadata style annotation use kar rahe.
-        # Behavior PDF viewer pe depend karega.
-        for idx, page in enumerate(reader.pages):
-            page_number = idx + 1
-            page.add_annotation({
-                "/Type": "/Annot",
-                "/Subtype": "/FreeText",
-                "/Rect": [40, 20, 200, 40],
-                "/Contents": f"Page {page_number}/{total}"
-            })
-            writer.add_page(page)
+        writer = PdfWriter()
+
+        for page_num in range(total):
+            original_page = reader.pages[page_num]
+
+            # Create temp canvas
+            layer_bytes = io.BytesIO()
+            c = canvas.Canvas(layer_bytes, pagesize=letter)
+
+            text = f"{page_num+1} / {total}"
+
+            if position == "bottom-left":
+                x, y = 40, 20
+            elif position == "bottom-right":
+                x, y = 520, 20
+            else:
+                x, y = 275, 20
+
+            c.setFont("Helvetica", 12)
+            c.drawString(x, y, text)
+            c.save()
+            layer_bytes.seek(0)
+
+            overlay = PdfReader(layer_bytes).pages[0]
+            original_page.merge_page(overlay)
+            writer.add_page(original_page)
 
         output = io.BytesIO()
         writer.write(output)
@@ -354,50 +321,47 @@ async def add_page_numbers(
         return StreamingResponse(
             output,
             media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=page-numbered.pdf"}
+            headers={"Content-Disposition": "attachment; filename=numbered.pdf"}
         )
+
     except Exception as e:
         return JSONResponse({"error": f"Add page numbers failed: {e}"}, status_code=500)
 
 
-# =========================================================
-# 9) ADD TEXT WATERMARK (very simple annotation)
-# =========================================================
+# -----------------------------------------------------------
+# 9) WATERMARK TEXT
+# -----------------------------------------------------------
 @app.post("/pdf/watermark")
-async def watermark_pdf(
-    file: UploadFile = File(...),
-    text: str = Form(...),
-    position: str = Form("center"),
-    opacity: float = Form(0.4),
-    rotation: int = Form(45)
-):
+async def watermark_pdf(file: UploadFile = File(...),
+                        text: str = Form(...)):
     try:
-        if not file.filename.lower().endswith(".pdf"):
-            return JSONResponse({"error": "Upload a PDF."}, status_code=400)
-        if not text:
-            return JSONResponse({"error": "Watermark text required."}, status_code=400)
-
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
+
         writer = PdfWriter()
 
-        # Yaha hum sirf FreeText annotation add kar rahe.
-        # Full graphic watermark ke liye reportlab ke saath merge karna padega (advanced).
         for page in reader.pages:
-            page.add_annotation({
-                "/Type": "/Annot",
-                "/Subtype": "/FreeText",
-                "/Rect": [100, 400, 400, 450],
-                "/Contents": text
-            })
+            layer_buf = io.BytesIO()
+            c = canvas.Canvas(layer_buf, pagesize=letter)
+            c.setFont("Helvetica", 40)
+            c.setFillGray(0.5, 0.5)
+            c.saveState()
+            c.rotate(45)
+            c.drawString(150, 0, text)
+            c.restoreState()
+            c.save()
+            layer_buf.seek(0)
+
+            overlay = PdfReader(layer_buf).pages[0]
+            page.merge_page(overlay)
             writer.add_page(page)
 
-        output = io.BytesIO()
-        writer.write(output)
-        output.seek(0)
+        out = io.BytesIO()
+        writer.write(out)
+        out.seek(0)
 
         return StreamingResponse(
-            output,
+            out,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=watermarked.pdf"}
         )
@@ -405,9 +369,9 @@ async def watermark_pdf(
         return JSONResponse({"error": f"Watermark failed: {e}"}, status_code=500)
 
 
-# =========================================================
-# 10) TEXT → PDF (simple, ignore extra options for now)
-# =========================================================
+# -----------------------------------------------------------
+# 10) TEXT → PDF
+# -----------------------------------------------------------
 @app.post("/pdf/text-to-pdf")
 async def text_to_pdf(
     text: str = Form(...),
@@ -416,36 +380,28 @@ async def text_to_pdf(
     alignment: str = Form("left")
 ):
     try:
-        if not text.strip():
-            return JSONResponse({"error": "Text is empty."}, status_code=400)
+        out = io.BytesIO()
+        c = canvas.Canvas(out, pagesize=letter)
 
-        output = io.BytesIO()
-        c = canvas.Canvas(output, pagesize=A4)
+        width, height = letter
+        y = height - 60
 
-        width, height = A4
-        y = height - 80
-
-        if title.strip():
+        if title:
             c.setFont("Helvetica-Bold", font_size + 2)
-            c.drawString(50, y, title.strip())
+            c.drawString(50, y, title)
             y -= 30
 
         c.setFont("Helvetica", font_size)
 
-        lines = text.split("\n")
-        for line in lines:
-            line = line.rstrip()
-            if y < 50:
+        for line in text.split("\n"):
+            if y < 60:
                 c.showPage()
-                y = height - 50
-                c.setFont("Helvetica", font_size)
+                y = height - 60
 
             if alignment == "center":
-                text_width = c.stringWidth(line, "Helvetica", font_size)
-                x = (width - text_width) / 2
+                x = (width - c.stringWidth(line)) / 2
             elif alignment == "right":
-                text_width = c.stringWidth(line, "Helvetica", font_size)
-                x = width - text_width - 50
+                x = width - c.stringWidth(line) - 50
             else:
                 x = 50
 
@@ -453,49 +409,36 @@ async def text_to_pdf(
             y -= (font_size + 4)
 
         c.save()
-        output.seek(0)
+        out.seek(0)
 
         return StreamingResponse(
-            output,
+            out,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=text.pdf"}
         )
+
     except Exception as e:
         return JSONResponse({"error": f"Text to PDF failed: {e}"}, status_code=500)
 
 
-# =========================================================
+# -----------------------------------------------------------
 # 11) IMAGES → PDF
-# =========================================================
+# -----------------------------------------------------------
 @app.post("/pdf/images-to-pdf")
-async def images_to_pdf(
-    images: List[UploadFile] = File(...),
-    page_size: str = Form("fit"),
-    orientation: str = Form("portrait"),
-    margin: int = Form(0)
-):
+async def images_to_pdf(images: List[UploadFile] = File(...)):
     try:
-        if not images:
-            return JSONResponse({"error": "Upload at least 1 image."}, status_code=400)
-
-        pil_images = []
+        pil_imgs = []
         for img in images:
-            img_bytes = await img.read()
-            pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            pil_images.append(pil)
+            data = await img.read()
+            pil = Image.open(io.BytesIO(data)).convert("RGB")
+            pil_imgs.append(pil)
 
-        if not pil_images:
-            return JSONResponse({"error": "No valid images."}, status_code=400)
-
-        # Simple: just join images into PDF pages same size as image.
-        output = io.BytesIO()
-        first = pil_images[0]
-        rest = pil_images[1:]
-        first.save(output, format="PDF", save_all=True, append_images=rest)
-        output.seek(0)
+        out = io.BytesIO()
+        pil_imgs[0].save(out, format="PDF", save_all=True, append_images=pil_imgs[1:])
+        out.seek(0)
 
         return StreamingResponse(
-            output,
+            out,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=images.pdf"}
         )
@@ -503,24 +446,18 @@ async def images_to_pdf(
         return JSONResponse({"error": f"Images to PDF failed: {e}"}, status_code=500)
 
 
-# =========================================================
+# -----------------------------------------------------------
 # 12) CSV → EXCEL
-# =========================================================
+# -----------------------------------------------------------
 @app.post("/convert/csv-to-excel")
 async def csv_to_excel(file: UploadFile = File(...)):
     try:
-        if not file.filename.lower().endswith(".csv"):
-            return JSONResponse({"error": "Upload a .csv file."}, status_code=400)
-
-        content = await file.read()
-        df = pd.read_csv(io.BytesIO(content))
-
-        output = io.BytesIO()
-        df.to_excel(output, index=False)
-        output.seek(0)
-
+        df = pd.read_csv(io.BytesIO(await file.read()))
+        out = io.BytesIO()
+        df.to_excel(out, index=False)
+        out.seek(0)
         return StreamingResponse(
-            output,
+            out,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=converted.xlsx"}
         )
@@ -528,24 +465,18 @@ async def csv_to_excel(file: UploadFile = File(...)):
         return JSONResponse({"error": f"CSV to Excel failed: {e}"}, status_code=500)
 
 
-# =========================================================
+# -----------------------------------------------------------
 # 13) EXCEL → CSV
-# =========================================================
+# -----------------------------------------------------------
 @app.post("/convert/excel-to-csv")
 async def excel_to_csv(file: UploadFile = File(...)):
     try:
-        if not (file.filename.lower().endswith(".xlsx") or file.filename.lower().endswith(".xls")):
-            return JSONResponse({"error": "Upload an Excel file (.xlsx/.xls)."}, status_code=400)
-
-        content = await file.read()
-        df = pd.read_excel(io.BytesIO(content))
-
-        output = io.BytesIO()
-        df.to_csv(output, index=False)
-        output.seek(0)
-
+        df = pd.read_excel(io.BytesIO(await file.read()))
+        out = io.BytesIO()
+        df.to_csv(out, index=False)
+        out.seek(0)
         return StreamingResponse(
-            output,
+            out,
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=converted.csv"}
         )
