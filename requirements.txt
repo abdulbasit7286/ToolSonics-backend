@@ -1,7 +1,9 @@
 fastapi
-uvicorn
-PyPDF2
-pandas
-Pillow
-reportlab
+uvicorn[standard]
+pypdf
 python-multipart
+pillow
+pandas
+reportlab
+openpyxl
+
