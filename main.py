@@ -1,40 +1,33 @@
-from fastapi import FastAPI, UploadFile, File, Form
+# main.py — ToolSonics Backend v3.0 (FastAPI + pypdf)
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 import io
 
-from PyPDF2 import PdfMerger, PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter
 from PIL import Image
 import pandas as pd
-
-# For page numbers (overlay using ReportLab)
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 
+app = FastAPI(title="ToolSonics Backend v3.0", version="3.0")
 
-app = FastAPI(title="ToolSonics Backend", version="2.0")
-
-
-# -----------------------------------------------------------
-# CORS ENABLE
-# -----------------------------------------------------------
+# CORS --------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # Later restrict to your domains
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "ToolSonics backend running"}
+    return {"status": "ok", "message": "ToolSonics backend running v3.0"}
 
 
-# -----------------------------------------------------------
-# PARSE PAGE RANGES (ex: 1,3,5-7)
-# -----------------------------------------------------------
+# Helper for handling page ranges -----------------------------
 def parse_pages(pages_str: str, total_pages: int):
     pages = set()
     for part in pages_str.split(","):
@@ -57,21 +50,22 @@ def parse_pages(pages_str: str, total_pages: int):
     return pages
 
 
-# -----------------------------------------------------------
-# 1) MERGE PDF
-# -----------------------------------------------------------
+# 1) MERGE PDF -------------------------------------------------
 @app.post("/pdf/merge")
 async def merge_pdf(files: List[UploadFile] = File(...)):
     try:
-        merger = PdfMerger()
+        writer = PdfWriter()
+
         for f in files:
             content = await f.read()
-            merger.append(io.BytesIO(content))
+            reader = PdfReader(io.BytesIO(content))
+
+            for page in reader.pages:
+                writer.add_page(page)
 
         output = io.BytesIO()
-        merger.write(output)
+        writer.write(output)
         output.seek(0)
-        merger.close()
 
         return StreamingResponse(
             output,
@@ -83,19 +77,20 @@ async def merge_pdf(files: List[UploadFile] = File(...)):
         return JSONResponse({"error": f"Merge failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 2) SPLIT PDF
-# -----------------------------------------------------------
+# 2) SPLIT PDF -------------------------------------------------
 @app.post("/pdf/split")
-async def split_pdf(file: UploadFile = File(...),
-                    start_page: int = Form(...),
-                    end_page: int = Form(...)):
+async def split_pdf(
+    file: UploadFile = File(...),
+    start_page: int = Form(...),
+    end_page: int = Form(...)
+):
     try:
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
         total = len(reader.pages)
 
         writer = PdfWriter()
+
         for i in range(start_page - 1, end_page):
             writer.add_page(reader.pages[i])
 
@@ -112,12 +107,12 @@ async def split_pdf(file: UploadFile = File(...),
         return JSONResponse({"error": f"Split failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 3) DELETE PAGES
-# -----------------------------------------------------------
+# 3) DELETE PAGES ---------------------------------------------
 @app.post("/pdf/delete-pages")
-async def delete_pages(file: UploadFile = File(...),
-                       pages: str = Form(...)):
+async def delete_pages(
+    file: UploadFile = File(...),
+    pages: str = Form(...)
+):
     try:
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
@@ -143,9 +138,7 @@ async def delete_pages(file: UploadFile = File(...),
         return JSONResponse({"error": f"Delete failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 4) ROTATE
-# -----------------------------------------------------------
+# 4) ROTATE ----------------------------------------------------
 @app.post("/pdf/rotate-pages")
 async def rotate_pages(
     file: UploadFile = File(...),
@@ -163,10 +156,13 @@ async def rotate_pages(
             rotate_set = set(range(1, total + 1))
 
         writer = PdfWriter()
+
         for i in range(total):
             page = reader.pages[i]
+
             if (i + 1) in rotate_set:
                 page.rotate(rotation)
+
             writer.add_page(page)
 
         output = io.BytesIO()
@@ -182,12 +178,12 @@ async def rotate_pages(
         return JSONResponse({"error": f"Rotate failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 5) REORDER
-# -----------------------------------------------------------
+# 5) REORDER ---------------------------------------------------
 @app.post("/pdf/reorder-pages")
-async def reorder_pages(file: UploadFile = File(...),
-                        order: str = Form(...)):
+async def reorder_pages(
+    file: UploadFile = File(...),
+    order: str = Form(...)
+):
     try:
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
@@ -196,7 +192,10 @@ async def reorder_pages(file: UploadFile = File(...),
         order_list = [int(x.strip()) for x in order.split(",") if x.strip()]
 
         if len(order_list) != total:
-            return JSONResponse({"error": f"Order must contain {total} numbers."}, status_code=400)
+            return JSONResponse(
+                {"error": f"Order must include exactly {total} page numbers."},
+                status_code=400
+            )
 
         writer = PdfWriter()
         for p in order_list:
@@ -215,12 +214,12 @@ async def reorder_pages(file: UploadFile = File(...),
         return JSONResponse({"error": f"Reorder failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 6) PROTECT
-# -----------------------------------------------------------
+# 6) PROTECT ---------------------------------------------------
 @app.post("/pdf/protect")
-async def protect_pdf(file: UploadFile = File(...),
-                      password: str = Form(...)):
+async def protect_pdf(
+    file: UploadFile = File(...),
+    password: str = Form(...)
+):
     try:
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
@@ -244,12 +243,12 @@ async def protect_pdf(file: UploadFile = File(...),
         return JSONResponse({"error": f"Protect failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 7) UNLOCK
-# -----------------------------------------------------------
+# 7) UNLOCK ----------------------------------------------------
 @app.post("/pdf/unlock")
-async def unlock_pdf(file: UploadFile = File(...),
-                     password: str = Form(...)):
+async def unlock_pdf(
+    file: UploadFile = File(...),
+    password: str = Form(...)
+):
     try:
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
@@ -258,8 +257,8 @@ async def unlock_pdf(file: UploadFile = File(...),
             reader.decrypt(password)
 
         writer = PdfWriter()
-        for p in reader.pages:
-            writer.add_page(p)
+        for page in reader.pages:
+            writer.add_page(page)
 
         out = io.BytesIO()
         writer.write(out)
@@ -274,9 +273,7 @@ async def unlock_pdf(file: UploadFile = File(...),
         return JSONResponse({"error": f"Unlock failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 8) ADD PAGE NUMBERS (FIXED)
-# -----------------------------------------------------------
+# 8) ADD PAGE NUMBERS -----------------------------------------
 @app.post("/pdf/add-page-numbers")
 async def add_page_numbers(
     file: UploadFile = File(...),
@@ -292,11 +289,10 @@ async def add_page_numbers(
         for page_num in range(total):
             original_page = reader.pages[page_num]
 
-            # Create temp canvas
-            layer_bytes = io.BytesIO()
-            c = canvas.Canvas(layer_bytes, pagesize=letter)
+            overlay_buf = io.BytesIO()
+            c = canvas.Canvas(overlay_buf, pagesize=letter)
 
-            text = f"{page_num+1} / {total}"
+            text = f"{page_num + 1} / {total}"
 
             if position == "bottom-left":
                 x, y = 40, 20
@@ -308,51 +304,47 @@ async def add_page_numbers(
             c.setFont("Helvetica", 12)
             c.drawString(x, y, text)
             c.save()
-            layer_bytes.seek(0)
+            overlay_buf.seek(0)
 
-            overlay = PdfReader(layer_bytes).pages[0]
+            overlay = PdfReader(overlay_buf).pages[0]
             original_page.merge_page(overlay)
             writer.add_page(original_page)
 
-        output = io.BytesIO()
-        writer.write(output)
-        output.seek(0)
+        out = io.BytesIO()
+        writer.write(out)
+        out.seek(0)
 
         return StreamingResponse(
-            output,
+            out,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=numbered.pdf"}
         )
-
     except Exception as e:
-        return JSONResponse({"error": f"Add page numbers failed: {e}"}, status_code=500)
+        return JSONResponse({"error": f"Page number failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 9) WATERMARK TEXT
-# -----------------------------------------------------------
+# 9) WATERMARK -------------------------------------------------
 @app.post("/pdf/watermark")
-async def watermark_pdf(file: UploadFile = File(...),
-                        text: str = Form(...)):
+async def watermark_pdf(
+    file: UploadFile = File(...),
+    text: str = Form(...)
+):
     try:
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
-
         writer = PdfWriter()
 
         for page in reader.pages:
-            layer_buf = io.BytesIO()
-            c = canvas.Canvas(layer_buf, pagesize=letter)
+            overlay_buf = io.BytesIO()
+            c = canvas.Canvas(overlay_buf, pagesize=letter)
             c.setFont("Helvetica", 40)
-            c.setFillGray(0.5, 0.5)
-            c.saveState()
+            c.setFillGray(0.5)
             c.rotate(45)
             c.drawString(150, 0, text)
-            c.restoreState()
             c.save()
-            layer_buf.seek(0)
+            overlay_buf.seek(0)
 
-            overlay = PdfReader(layer_buf).pages[0]
+            overlay = PdfReader(overlay_buf).pages[0]
             page.merge_page(overlay)
             writer.add_page(page)
 
@@ -369,9 +361,7 @@ async def watermark_pdf(file: UploadFile = File(...),
         return JSONResponse({"error": f"Watermark failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 10) TEXT → PDF
-# -----------------------------------------------------------
+# 10) TEXT → PDF -----------------------------------------------
 @app.post("/pdf/text-to-pdf")
 async def text_to_pdf(
     text: str = Form(...),
@@ -382,14 +372,13 @@ async def text_to_pdf(
     try:
         out = io.BytesIO()
         c = canvas.Canvas(out, pagesize=letter)
-
         width, height = letter
         y = height - 60
 
         if title:
-            c.setFont("Helvetica-Bold", font_size + 2)
+            c.setFont("Helvetica-Bold", font_size + 4)
             c.drawString(50, y, title)
-            y -= 30
+            y -= 40
 
         c.setFont("Helvetica", font_size)
 
@@ -406,7 +395,7 @@ async def text_to_pdf(
                 x = 50
 
             c.drawString(x, y, line)
-            y -= (font_size + 4)
+            y -= font_size + 6
 
         c.save()
         out.seek(0)
@@ -416,14 +405,11 @@ async def text_to_pdf(
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=text.pdf"}
         )
-
     except Exception as e:
-        return JSONResponse({"error": f"Text to PDF failed: {e}"}, status_code=500)
+        return JSONResponse({"error": f"Text PDF failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 11) IMAGES → PDF
-# -----------------------------------------------------------
+# 11) IMAGES → PDF ---------------------------------------------
 @app.post("/pdf/images-to-pdf")
 async def images_to_pdf(images: List[UploadFile] = File(...)):
     try:
@@ -443,12 +429,10 @@ async def images_to_pdf(images: List[UploadFile] = File(...)):
             headers={"Content-Disposition": "attachment; filename=images.pdf"}
         )
     except Exception as e:
-        return JSONResponse({"error": f"Images to PDF failed: {e}"}, status_code=500)
+        return JSONResponse({"error": f"Images PDF failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 12) CSV → EXCEL
-# -----------------------------------------------------------
+# 12) CSV → EXCEL ----------------------------------------------
 @app.post("/convert/csv-to-excel")
 async def csv_to_excel(file: UploadFile = File(...)):
     try:
@@ -456,18 +440,17 @@ async def csv_to_excel(file: UploadFile = File(...)):
         out = io.BytesIO()
         df.to_excel(out, index=False)
         out.seek(0)
+
         return StreamingResponse(
             out,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=converted.xlsx"}
         )
     except Exception as e:
-        return JSONResponse({"error": f"CSV to Excel failed: {e}"}, status_code=500)
+        return JSONResponse({"error": f"CSV→Excel failed: {e}"}, status_code=500)
 
 
-# -----------------------------------------------------------
-# 13) EXCEL → CSV
-# -----------------------------------------------------------
+# 13) EXCEL → CSV ----------------------------------------------
 @app.post("/convert/excel-to-csv")
 async def excel_to_csv(file: UploadFile = File(...)):
     try:
@@ -475,10 +458,12 @@ async def excel_to_csv(file: UploadFile = File(...)):
         out = io.BytesIO()
         df.to_csv(out, index=False)
         out.seek(0)
+
         return StreamingResponse(
             out,
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=converted.csv"}
         )
     except Exception as e:
-        return JSONResponse({"error": f"Excel to CSV failed: {e}"}, status_code=500)
+        return JSONResponse({"error": f"Excel→CSV failed: {e}"}, status_code=500)
+
