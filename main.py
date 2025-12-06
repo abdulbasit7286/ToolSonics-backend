@@ -17,7 +17,12 @@ app = FastAPI(title="ToolSonics Backend v3.0", version="3.0")
 # CORS --------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Later restrict to your domains
+    allow_origins=[
+        "https://toolsonics.com",
+        "https://www.toolsonics.com",
+        "https://tool-sonics.vercel.app"
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
